@@ -2,3 +2,4 @@
 time_tracker.db time_tracker.db.wal
 time_tracker.db
 time_tracker.db.wal
+.input_history
