@@ -5,6 +5,16 @@ from pynput import keyboard
 from threading import Thread
 import os
 import readline
+import argparse
+import shlex
+from icecream import ic
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        if message.startswith('argument command: invalid choice:'):
+            return
+        else:
+            print(message)
 
 class TimeTracker:
     def __init__(self, db_file='time_tracker.db'):
@@ -15,7 +25,7 @@ class TimeTracker:
         print("▐▌   ▐▛▀▜▌▐▛▀▚▖▐▌ ▐▌▐▌ ▝▜▌▐▌ ▐▌ ▝▀▚▖")
         print("▝▚▄▄▖▐▌ ▐▌▐▌ ▐▌▝▚▄▞▘▐▌  ▐▌▝▚▄▞▘▗▄▄▞▘\n")
 
-        self.histfile = os.path.expanduser("~") + "/.input_history"
+        self.histfile = os.path.expanduser(os.path.dirname(os.path.abspath(__file__))) + "/.input_history"
 
         if not os.path.exists(self.histfile):
             open(self.histfile, 'w').close()
@@ -33,6 +43,30 @@ class TimeTracker:
         self.init_db()
 
         self.main()
+
+    def create_parser(self):
+        parser = ArgumentParser(description="Time Tracker CLI", add_help=True)
+
+        subparsers = parser.add_subparsers(dest="command")
+
+        abstract_log_parser = ArgumentParser()
+        abstract_log_parser.add_argument("label", help="Task short description")
+
+        subparsers.add_parser("log", help="Log a new task")
+
+        retro_parser = subparsers.add_parser("retro", help="Log a task retroactively")
+        retro_parser.add_argument('minutes', help="Number of minute in the past")
+
+        drink_parser = subparsers.add_parser("drink", help="Log a drink")
+        drink_parser.add_argument("drink", help="What type of drink", choices=['water', 'coffee', 'soda', 'alcohol'])
+
+        subparsers.add_parser("today", help="Display today's logged tasks")
+        subparsers.add_parser("end_day", help="Close tasks and enter task's ID")
+        subparsers.add_parser("pause", help="Close current task while keeping the program alive")
+        subparsers.add_parser("exit", help="Exit Time Tracker")
+        subparsers.add_parser("help", help="Show available commands")
+
+        return parser
 
     def init_db(self):
         self.conn.execute('''CREATE SEQUENCE IF NOT EXISTS seq;''')
@@ -149,52 +183,49 @@ class TimeTracker:
         self.conn.commit()
 
     def main(self):
+        parser = self.create_parser()
+
         while True:
-            choice = input('Type command: ')
+            try:
+                command_input = input("\n> ")
 
-            readline.add_history(choice)
-            readline.write_history_file(self.histfile)
+                #readline.add_history(command_input)
+                #readline.write_history_file(self.histfile)
 
-            if " " in choice:
-                command, label = choice.split(" ", 1)
-            else:
-                command = choice
-                label = None
-            base_datetime = datetime.now()
-            match command:
-                case "log":
-                    if not label:
-                        label = input("Insert label: ")
-                    self.insert_log(base_datetime, label)
-                case "retro":
-                    if not label:
-                        label = input("Insert \"[minutes ago] [label]\": ")
-                    if " " in label:
-                        minutes, label = label.split(" ", 1)
-                        if minutes.isdigit():
-                            retro_datetime = base_datetime - timedelta(minutes=int(minutes))
-                            self.insert_log(retro_datetime, label)
-                        else:
-                            print("Invalid minutes value.")
-                    else:
-                        print("Invalid value: \"[minutes ago] [label]\"")
-                case "today":
-                    self.show_today_summary()
-                case "end_day":
-                    self.end_day()
-                case "pause":
-                    self.close_current_log()
-                    print('You are currently\033[91m paused\033[0m. No task is logged.')
-                case "clear":
-                    self.refresh_duckdb()
-                case "drink":
-                    if not label:
-                        label = input("Which drink?: ")
-                    self.log_drink(label)
-                case "exit":
-                    self.close_current_log()
-                    self.conn.commit()
-                    break
+                args, unknown_args = parser.parse_known_args(shlex.split(command_input))
+
+                ic(unknown_args)
+                if unknown_args:
+                    print("Unknown command. Type 'help' to see the available commands.")
+                    continue
+
+                base_datetime = datetime.now()
+
+                match args.command:
+                    case "log":
+                        self.insert_log(base_datetime, args.label)
+                    case "retro":
+                        retro_datetime = base_datetime - timedelta(minutes=int(args.minutes))
+                        self.insert_log(retro_datetime, args.label)
+                    case "today":
+                        self.show_today_summary()
+                    case "end_day":
+                        self.end_day()
+                    case "pause":
+                        self.close_current_log()
+                        print('You are currently\033[91m paused\033[0m. No task is logged.')
+                    case "drink":
+                        self.log_drink(args.drink)
+                    case "exit":
+                        self.close_current_log()
+                        self.conn.commit()
+                        break
+                    #case "clear":
+                    #    self.refresh_duckdb()
+            except SystemExit:
+                pass
+            except Exception as e:
+                print(f"Error : {e}")
 
 if __name__ == "__main__":
     programme = TimeTracker()
