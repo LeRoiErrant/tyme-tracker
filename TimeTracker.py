@@ -68,6 +68,7 @@ class TimeTracker:
                 """
         self.conn.execute(update_query, (time, self.last_insert_id))
         self.conn.commit()
+        self.last_insert_id = None
 
     def insert_log(self, base_datetime, label):
         self.close_current_log(base_datetime)
