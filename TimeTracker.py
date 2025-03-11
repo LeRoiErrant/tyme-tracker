@@ -1,13 +1,18 @@
 import duckdb
 import pandas as pd
 from datetime import datetime, timedelta
-from pynput import keyboard
+
+from customtkinter import CTkEntry
+from pynput import keyboard, mouse
 from threading import Thread
 import os
 import readline
 import argparse
 import shlex
 from icecream import ic
+import tkinter as tk
+from tkinter import Toplevel, Label, ttk
+import customtkinter as ctk
 
 class ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
@@ -27,22 +32,164 @@ class TimeTracker:
 
         self.histfile = os.path.expanduser(os.path.dirname(os.path.abspath(__file__))) + "/.input_history"
 
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("green")
+        self.win = ctk.CTk()
+
+        self.enlarged = False
+        buttons_pad_y = 10
+        buttons_pad_x = 10
+        buttons_frame_height = 3 * ((2*buttons_pad_y) + 30)
+        self.base_geometry = "150x" + str(buttons_frame_height)
+        self.enlarged_geometry = "750x400"
+        self.win.geometry(self.base_geometry)
+        self.win.attributes('-topmost', 1)
+        self.win.attributes("-alpha", 0.7)
+
+        self.win.update_idletasks()
+        self.get_window_position()
+
+        btn_frame = ctk.CTkFrame(self.win, width=150)
+        table_frame= ctk.CTkFrame(self.win, width=600)
+        btn_frame.pack(side=ctk.LEFT, fill="both", expand=True)
+        table_frame.pack(side=ctk.LEFT, fill="both", expand=True)
+
+        log_button = ctk.CTkButton(btn_frame, width=130, text="Log task", command=self.open_log_popup)
+        log_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
+        print(log_button.winfo_geometry())
+
+        enlarge_button = ctk.CTkButton(btn_frame, width=130, text="Show current log", command=self.enlarge_window)
+        enlarge_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
+
+        exit_button = ctk.CTkButton(btn_frame, width=130, text="Exit", command=self.exit_gui, fg_color="#b20000", hover_color="#e50000")
+        exit_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
+
+        table_config = {
+            'id': {
+                'header': 'ID',
+                'width':  100
+            },
+            'date': {
+                'header': 'Date',
+                'width': 100
+            },
+            'hour_start': {
+                'header': 'Start',
+                'width': 100
+            },
+            'hour_end': {
+                'header': 'End',
+                'width': 100
+            },
+            'label': {
+                'header': 'Label',
+                'width': 100
+            },
+            'task_id': {
+                'header': 'Task',
+                'width': 100
+            }
+        }
+        table_columns = tuple(table_config.keys())
+        self.table = ttk.Treeview(table_frame, columns=table_columns, show='headings')
+
+
+
+        for column in table_columns:
+            self.table.heading(column, text=table_config[column]['header'])
+            self.table.column(column, width=table_config[column]['width'])
+
+        self.listener = mouse.Listener(on_move=self.on_mouse_move)
+        self.listener.start()
+
+        ttk.Button(self.win, text="Open", command=self.open_log_popup).pack()
+
         if not os.path.exists(self.histfile):
             open(self.histfile, 'w').close()
 
         try:
             readline.read_history_file(self.histfile)
         except FileNotFoundError:
-            pass
+            ic("File not found")
 
-        self.hotkeys = keyboard.GlobalHotKeys({'<ctrl>+<alt>+t': self.focus_terminal})
         listener_thread = Thread(target=self.listen_shortcut, daemon=True)
         listener_thread.start()
         self.last_insert_id = None
         self.conn = duckdb.connect(db_file)
         self.init_db()
+        self.fill_table()
 
-        self.main()
+        self.table.bind('<<TreeviewSelect>>', self.update_row)
+
+
+        self.table.pack(expand=True, fill="both")
+        #Thread(target=self.main, daemon=True).start()
+        self.win.mainloop()
+
+    def update_row(self, _):
+        for item in self.table.selection():
+            values = self.table.item(item)['values']
+            edit = ctk.CTkToplevel(self.win)
+            edit.geometry("300x300")
+            edit.attributes('-topmost', 1)
+            edit.title("Log task")
+            column_names = ["Date", "Time Start", "Time End", "Label", "Task ID"]
+
+            entries = []
+            for i in range(1, len(values)):
+                frame = ctk.CTkFrame(edit)
+                frame.pack(pady=10)
+                ctk.CTkLabel(frame, text=column_names[i - 1]).pack(side=tk.LEFT, padx=5)
+                entry = ctk.CTkEntry(frame)
+                entry.insert(0, str(values[i]))
+                entry.pack(side=tk.LEFT)
+                entries.append(entry)
+
+            def save_changes():
+                new_values = [values[0]] + [entry.get() for entry in entries]
+                query = """
+                        UPDATE time_log
+                        SET date = ?, time_start = ?, time_end = ?, label = ?, task_id = ?
+                        WHERE id = ?
+                    """
+                self.conn.execute(query, tuple(new_values[1:] + [new_values[0]]))
+                self.conn.commit()
+                self.table.item(item, values=new_values)
+                edit.destroy()
+
+            save_button = ctk.CTkButton(edit, text="Save", command=save_changes)
+            save_button.pack(pady=10)
+
+    def fill_table(self):
+        today = datetime.today().strftime('%Y-%m-%d')
+        query = """SELECT id, date,time_start, time_end, label, task_id
+                    FROM time_log
+                    WHERE date = ?
+                """
+        data = self.conn.execute(query, (today,)).fetchall()
+        self.table.delete(*self.table.get_children())
+        for item in data:
+            self.table.insert("", "end", values=item)
+
+    def get_window_position(self):
+        self.win.update_idletasks()
+        x = self.win.winfo_x()
+        y = self.win.winfo_y()
+        width = self.win.winfo_width()
+        height = self.win.winfo_height()
+        self.window_area = (x, y, x + width, y + height)
+
+    def on_mouse_move(self, x, y):
+        self.get_window_position()
+        x1, y1, x2, y2 = self.window_area
+
+        marge = 100
+        if (x1 - marge) <= x <= (x2 + marge) and (y1 - marge) <= y <= (y2 + marge):
+            self.win.attributes("-alpha", 1.0)
+        else:
+            self.win.attributes("-alpha", 0.7)
+            if self.enlarged:
+                self.enlarge_window()
 
     def create_parser(self):
         parser = ArgumentParser(description="Time Tracker CLI", add_help=True)
@@ -52,9 +199,11 @@ class TimeTracker:
         abstract_log_parser = ArgumentParser()
         abstract_log_parser.add_argument("label", help="Task short description")
 
-        subparsers.add_parser("log", help="Log a new task")
+        log_parser = subparsers.add_parser("log", help="Log a new task")
+        log_parser.add_argument("label", help="Task short description")
 
         retro_parser = subparsers.add_parser("retro", help="Log a task retroactively")
+        retro_parser.add_argument("label", help="Task short description")
         retro_parser.add_argument('minutes', help="Number of minute in the past")
 
         drink_parser = subparsers.add_parser("drink", help="Log a drink")
@@ -104,6 +253,14 @@ class TimeTracker:
         self.conn.commit()
         self.last_insert_id = None
 
+    def enlarge_window(self):
+        if self.enlarged:
+            self.win.geometry(self.base_geometry)
+        else:
+            self.win.geometry(self.enlarged_geometry)
+
+        self.enlarged = not self.enlarged
+
     def insert_log(self, base_datetime, label):
         self.close_current_log(base_datetime)
         date = base_datetime.strftime('%Y-%m-%d')
@@ -112,11 +269,49 @@ class TimeTracker:
         result = self.conn.execute("INSERT INTO time_log (date,time_start, label) VALUES (?, ?, ?)  RETURNING (id)",
                           (date, time, label)).fetchone()
         print('You\033[92m started\033[0m working on "' + label + '" at ' + time)
+        self.fill_table()
         if result:
             self.last_insert_id = result[0]
 
+    def for_canonical(self, f):
+        return lambda k: f(k)
+
+    def open_log_popup(self):
+        self.win.attributes("-alpha", 1)
+        logger = ctk.CTkToplevel(self.win)
+        logger.geometry("300x50")
+        logger.attributes('-topmost', 1)
+        logger.title("Log task")
+
+
+        frame = ctk.CTkFrame(logger)
+        frame.pack(pady=10)
+
+        entry = ctk.CTkEntry(frame, width=200)
+        entry.pack(side=tk.LEFT, padx=5)
+        entry.focus_set()
+
+        def on_enter(event=None):
+            label_text = entry.get()
+            if label_text:
+                self.insert_log(datetime.now(), label_text)
+                logger.destroy()
+                self.win.attributes("-alpha", 0.7)
+
+        entry.bind("<Return>", on_enter)
+
+        ctk.CTkButton(frame, text="OK", width=70, command=on_enter).pack(side=tk.LEFT)
+
+
     def listen_shortcut(self):
-        self.hotkeys.start()
+        hotkey = keyboard.HotKey(keyboard.HotKey.parse('<ctrl>+<alt>+t'), self.open_log_popup)
+
+        with keyboard.Listener(
+            on_press=self.for_canonical(hotkey.press),
+            on_release=self.for_canonical(hotkey.release)
+        ) as listener:
+            listener.join()
+
 
     def focus_terminal(self):
         #os.system('''osascript -e 'tell application "Terminal" to activate' ''')  # Pour Terminal.app
@@ -182,6 +377,13 @@ class TimeTracker:
         """, (today, drink, 1))
         self.conn.commit()
 
+    def exit_gui(self):
+        self.close_current_log()
+        self.conn.commit()
+        self.conn.close()
+        self.win.destroy()
+        self.win.quit()
+
     def main(self):
         parser = self.create_parser()
 
@@ -189,8 +391,8 @@ class TimeTracker:
             try:
                 command_input = input("\n> ")
 
-                #readline.add_history(command_input)
-                #readline.write_history_file(self.histfile)
+                readline.add_history(command_input)
+                readline.write_history_file(self.histfile)
 
                 args, unknown_args = parser.parse_known_args(shlex.split(command_input))
 
