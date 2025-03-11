@@ -23,6 +23,9 @@ class ArgumentParser(argparse.ArgumentParser):
 
 class TimeTracker:
     def __init__(self, db_file='time_tracker.db'):
+        self.chrono_label = None
+        self.window_area = None
+        self.table = None
         os.system('cls' if os.name == 'nt' else 'clear')
 
         print(" ▗▄▄▖▗▖ ▗▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖ ▗▄▖  ▗▄▄▖")
@@ -32,42 +35,75 @@ class TimeTracker:
 
         self.histfile = os.path.expanduser(os.path.dirname(os.path.abspath(__file__))) + "/.input_history"
 
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("green")
-        self.win = ctk.CTk()
-
+        self.buttons_pad_y = 10
+        self.buttons_pad_x = 10
+        self.buttons_frame_height = 4 * ((2 * self.buttons_pad_y) + 30)
+        self.buttons_frame_width = 150
+        self.table_frame_width = 600
+        self.base_geometry = str(self.buttons_frame_width) + "x" + str(self.buttons_frame_height)
+        self.enlarged_geometry = str(self.buttons_frame_width + self.table_frame_width) + "x400"
         self.enlarged = False
-        buttons_pad_y = 10
-        buttons_pad_x = 10
-        buttons_frame_height = 3 * ((2*buttons_pad_y) + 30)
-        self.base_geometry = "150x" + str(buttons_frame_height)
-        self.enlarged_geometry = "750x400"
-        self.win.geometry(self.base_geometry)
-        self.win.attributes('-topmost', 1)
-        self.win.attributes("-alpha", 0.7)
+        self.win = self.config_window()
 
+        if not os.path.exists(self.histfile):
+            open(self.histfile, 'w').close()
+        try:
+            readline.read_history_file(self.histfile)
+        except FileNotFoundError:
+            ic("File not found")
+
+        listener_thread = Thread(target=self.listen_shortcut, daemon=True)
+        listener_thread.start()
+        self.last_insert_id = None
+        self.conn = duckdb.connect(db_file)
+        self.init_db()
+
+        self.button_frame = self.config_buttons_frame()
+        self.table = self.config_table_frame()
         self.win.update_idletasks()
         self.get_window_position()
 
-        btn_frame = ctk.CTkFrame(self.win, width=150)
-        table_frame= ctk.CTkFrame(self.win, width=600)
+        self.listener = mouse.Listener(on_move=self.on_mouse_move)
+        self.listener.start()
+
+        self.fill_table()
+        self.win.mainloop()
+
+    def config_window(self):
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("green")
+        win = ctk.CTk()
+
+        win.geometry(self.base_geometry)
+        win.attributes('-topmost', 1)
+        win.attributes("-alpha", 0.7)
+        return win
+
+    def config_buttons_frame(self, ):
+        btn_frame = ctk.CTkFrame(self.win, width=self.buttons_frame_width)
         btn_frame.pack(side=ctk.LEFT, fill="both", expand=True)
+        self.chrono_label = tk.Label(btn_frame, text="00:00:00", font=("Arial", 14))
+        self.chrono_label.pack(padx=self.buttons_pad_x, pady=self.buttons_pad_y)
+        self.update_time()
+
+        self.add_button(btn_frame, "Log task", self.open_log_popup)
+        self.add_button(btn_frame, "Show current log", self.enlarge_window)
+        self.add_button(btn_frame, "Exit", self.exit_gui, fg_color="#b20000", hover_color="#e50000")
+        return btn_frame
+
+    def add_button(self, parent, label, command, fg_color = None, hover_color = None):
+        button_width = self.buttons_frame_width - (2 * self.buttons_pad_x)
+        button = ctk.CTkButton(parent, width=button_width, text=label, command=command, fg_color=fg_color, hover_color=hover_color)
+        button.pack(pady=self.buttons_pad_y, padx=self.buttons_pad_x)
+        return button
+
+    def config_table_frame(self):
+        table_frame = ctk.CTkFrame(self.win, width=self.table_frame_width)
         table_frame.pack(side=ctk.LEFT, fill="both", expand=True)
-
-        log_button = ctk.CTkButton(btn_frame, width=130, text="Log task", command=self.open_log_popup)
-        log_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
-        print(log_button.winfo_geometry())
-
-        enlarge_button = ctk.CTkButton(btn_frame, width=130, text="Show current log", command=self.enlarge_window)
-        enlarge_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
-
-        exit_button = ctk.CTkButton(btn_frame, width=130, text="Exit", command=self.exit_gui, fg_color="#b20000", hover_color="#e50000")
-        exit_button.pack(pady=buttons_pad_y, padx=buttons_pad_x)
-
         table_config = {
             'id': {
                 'header': 'ID',
-                'width':  100
+                'width': 100
             },
             'date': {
                 'header': 'Date',
@@ -91,40 +127,41 @@ class TimeTracker:
             }
         }
         table_columns = tuple(table_config.keys())
-        self.table = ttk.Treeview(table_frame, columns=table_columns, show='headings')
-
-
+        table = ttk.Treeview(table_frame, columns=table_columns, show='headings')
 
         for column in table_columns:
-            self.table.heading(column, text=table_config[column]['header'])
-            self.table.column(column, width=table_config[column]['width'])
+            table.heading(column, text=table_config[column]['header'])
+            table.column(column, width=table_config[column]['width'])
 
-        self.listener = mouse.Listener(on_move=self.on_mouse_move)
-        self.listener.start()
+        table.bind('<<TreeviewSelect>>', self.update_row)
+        table.pack(expand=True, fill="both")
+        return table
 
-        ttk.Button(self.win, text="Open", command=self.open_log_popup).pack()
+    def calculate_work_time(self):
+        today_str = datetime.today().strftime('%Y-%m-%d')
+        query = "SELECT time_start, time_end FROM time_log WHERE time_start IS NOT NULL AND date = ?;"
+        rows = self.conn.execute(query, (today_str,)).fetchall()
 
-        if not os.path.exists(self.histfile):
-            open(self.histfile, 'w').close()
+        total_seconds = 0
+        now = datetime.now()
+        today = now.date()
+        for hour_start, hour_end in rows:
+            start_time = datetime.strptime(hour_start, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
+            if hour_end:
+                end_time = datetime.strptime(hour_end, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
+            else:
+                end_time = now
+            total_seconds += (end_time - start_time).total_seconds()
 
-        try:
-            readline.read_history_file(self.histfile)
-        except FileNotFoundError:
-            ic("File not found")
+        hours, remainder = divmod(int(total_seconds), 3600)
+        minutes, seconds = divmod(remainder, 60)
 
-        listener_thread = Thread(target=self.listen_shortcut, daemon=True)
-        listener_thread.start()
-        self.last_insert_id = None
-        self.conn = duckdb.connect(db_file)
-        self.init_db()
-        self.fill_table()
+        return f"{hours:02}:{minutes:02}"
 
-        self.table.bind('<<TreeviewSelect>>', self.update_row)
-
-
-        self.table.pack(expand=True, fill="both")
-        #Thread(target=self.main, daemon=True).start()
-        self.win.mainloop()
+    def update_time(self):
+        work_time = self.calculate_work_time()
+        self.chrono_label.config(text=f"{work_time}")
+        self.win.after(int(60000), self.update_time)
 
     def update_row(self, _):
         for item in self.table.selection():
@@ -268,7 +305,6 @@ class TimeTracker:
 
         result = self.conn.execute("INSERT INTO time_log (date,time_start, label) VALUES (?, ?, ?)  RETURNING (id)",
                           (date, time, label)).fetchone()
-        print('You\033[92m started\033[0m working on "' + label + '" at ' + time)
         self.fill_table()
         if result:
             self.last_insert_id = result[0]
@@ -327,13 +363,11 @@ class TimeTracker:
         """
         df = self.conn.query(query).df()
 
-        print(df)
 
     def refresh_duckdb(self):
         query = """DROP TABLE IF EXISTS time_log"""
         self.conn.query(query)
         self.conn.execute("""DROP SEQUENCE IF EXISTS seq""")
-        print("Table cleared.")
         self.init_db()
 
     def end_day(self):
