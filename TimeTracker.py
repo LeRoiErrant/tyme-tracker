@@ -37,7 +37,7 @@ class TimeTracker:
 
         self.buttons_pad_y = 10
         self.buttons_pad_x = 10
-        self.buttons_frame_height = 4 * ((2 * self.buttons_pad_y) + 30)
+        self.buttons_frame_height = 5 * ((2 * self.buttons_pad_y) + 30)
         self.buttons_frame_width = 150
         self.table_frame_width = 600
         self.base_geometry = str(self.buttons_frame_width) + "x" + str(self.buttons_frame_height)
@@ -87,6 +87,7 @@ class TimeTracker:
         self.update_time()
 
         self.add_button(btn_frame, "Log task", self.open_log_popup)
+        self.add_button(btn_frame, "Stop", self.close_current_log, fg_color="#57A0D2", hover_color="#4682B4")
         self.add_button(btn_frame, "Show current log", self.enlarge_window)
         self.add_button(btn_frame, "Exit", self.exit_gui, fg_color="#b20000", hover_color="#e50000")
         return btn_frame
